@@ -1,7 +1,13 @@
 .item-list {
   list-style: none;
   padding: 0;
-  max-height: 660px;
+  margin: 0;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+#scrollableDiv {
+  height: 650px;
   overflow-y: auto;
   border: 1px solid #ccc;
   border-radius: 4px;

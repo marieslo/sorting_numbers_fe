@@ -1,40 +1,31 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import axios from 'axios';
-import type { Item } from '../src/types';
-import { API_URL } from '../src/api/api';
-
+import type { Item, UserState } from '../src/types';
+import InfiniteScroll from 'react-infinite-scroll-component';
 import {
   DragDropContext,
   Droppable,
   Draggable,
 } from '@hello-pangea/dnd';
-
 import type { DropResult } from '@hello-pangea/dnd';
 
 import SearchInput from './SearchInput';
 import ItemRow from './ItemRow';
 import Loader from './Loader';
-import './ItemList.css';
+import { API_URL } from '../src/api/api';
 
 const LIMIT = 20;
 
-const fetchItems = async (search = '', offset = 0, limit = 20, useSorted = false) => {
-  const response = await axios.get<{ items: Item[]; total: number }>(`${API_URL}/items`, {
-    params: { search, offset, limit, ...(useSorted ? { useSorted: 'true' } : {}) },
-  });
-  return response.data;
-};
+function useDebounce<T>(value: T, delay = 300): T {
+  const [debounced, setDebounced] = useState(value);
 
-const fetchUserState = async () => {
-  const response = await axios.get<{ selectedIds: number[]; sortedIds: number[]; offset: number }>(
-    `${API_URL}/get-state`
-  );
-  return response.data;
-};
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
 
-const saveUserState = async (state: { selectedIds: number[]; sortedIds: number[]; offset: number }) => {
-  await axios.post(`${API_URL}/save-state`, state);
-};
+  return debounced;
+}
 
 const ItemList = () => {
   const [items, setItems] = useState<Item[]>([]);
@@ -43,147 +34,182 @@ const ItemList = () => {
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [search, setSearch] = useState('');
+  const [hasMore, setHasMore] = useState(true);
+  const [isInitialized, setIsInitialized] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const listRef = useRef<HTMLUListElement>(null);
+  const debouncedSearch = useDebounce(search, 300);
+  const isLoadingRef = useRef(false);
 
-  // Загрузка состояния с сервера и начальная загрузка элементов
-  useEffect(() => {
-    const loadStateAndItems = async () => {
+  const fetchUserState = useCallback(async (): Promise<UserState> => {
+    try {
+      const response = await axios.get<UserState>(`${API_URL}/get-state`);
+      return response.data;
+    } catch (e) {
+      console.error('Ошибка загрузки состояния:', e);
+      return { selectedIds: [], sortedIds: [], offset: 0 };
+    }
+  }, []);
+
+  const saveUserState = useCallback((state: UserState) => {
+    axios.post(`${API_URL}/save-state`, state).catch(console.error);
+  }, []);
+
+  const loadItems = useCallback(
+    async (start: number, searchTerm: string, useSorted = false) => {
+      if (isLoadingRef.current) return { items: [], total: 0 };
+      isLoadingRef.current = true;
       setLoading(true);
+
+      try {
+        const response = await axios.get<{ items: Item[]; total: number }>(`${API_URL}/items`, {
+          params: { offset: start, limit: LIMIT, search: searchTerm, useSorted: useSorted.toString() },
+        });
+
+        return { items: response.data.items, total: response.data.total };
+      } catch (err) {
+        console.error('Ошибка при загрузке элементов:', err);
+        return { items: [], total: 0 };
+      } finally {
+        isLoadingRef.current = false;
+        setLoading(false);
+      }
+    },
+    []
+  );
+
+  // Инициализация: загрузка состояния и первых элементов
+  useEffect(() => {
+    (async () => {
       const state = await fetchUserState();
       setSelectedIds(state.selectedIds || []);
       setSortedIds(state.sortedIds || []);
-      setOffset(state.offset || 0);
+      const savedOffset = state.offset || 0;
 
-      await loadMoreItems(state.offset || 0, search, true, true, state.sortedIds || []);
-      setLoading(false);
-    };
-    loadStateAndItems();
-  }, []);
+      const { items: firstBatch, total: totalCount } = await loadItems(0, '', savedOffset === 0 ? false : true);
+      setItems(firstBatch);
+      setOffset(firstBatch.length);
+      setHasMore(firstBatch.length < totalCount);
+      setTotal(totalCount);
 
-  const loadMoreItems = async (
-    start: number,
-    searchTerm: string,
-    replace = false,
-    useSorted = false,
-    sortedIdsParam: number[] = sortedIds
-  ) => {
-    setLoading(true);
-    try {
-      const data = await fetchItems(searchTerm, start, LIMIT, useSorted);
-      let newItems = replace ? data.items : [...items, ...data.items];
-
-      if (useSorted && sortedIdsParam.length > 0) {
-        const map = new Map(newItems.map((item) => [item.id, item]));
-        const ordered = sortedIdsParam.map((id) => map.get(id)).filter(Boolean) as Item[];
-        const sortedSet = new Set(sortedIdsParam);
-        const rest = newItems.filter((item) => !sortedSet.has(item.id));
-        newItems = [...ordered, ...rest];
+      // Если сохранён оффсет больше LIMIT — подгружаем остальные
+      if (savedOffset > LIMIT) {
+        let allItems = firstBatch;
+        for (let start = LIMIT; start < savedOffset; start += LIMIT) {
+          const { items: batch } = await loadItems(start, '', true);
+          allItems = [...allItems, ...batch];
+        }
+        setItems(allItems);
+        setOffset(allItems.length);
+        setHasMore(allItems.length < totalCount);
       }
+      setIsInitialized(true);
+    })();
+  }, [fetchUserState, loadItems]);
+
+  // Обработка изменения поискового запроса (debounced)
+  useEffect(() => {
+    if (!isInitialized) return;
+
+    (async () => {
+      setOffset(0);
+      setHasMore(true);
+      const useSorted = debouncedSearch === '' && sortedIds.length > 0;
+      const { items: newItems, total: totalCount } = await loadItems(0, debouncedSearch, useSorted);
 
       setItems(newItems);
-      setTotal(data.total);
-      setOffset(start + LIMIT);
-      saveUserState({ selectedIds, sortedIds, offset: start + LIMIT });
-    } catch (err) {
-      console.error('Ошибка при загрузке элементов:', err);
-    }
-    setLoading(false);
-  };
+      setTotal(totalCount);
+      setOffset(newItems.length);
+      setHasMore(newItems.length < totalCount);
+    })();
+  }, [debouncedSearch, isInitialized, loadItems, sortedIds]);
 
-  const onScroll = useCallback(() => {
-    const el = listRef.current;
-    if (!el || loading) return;
-
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 50) {
-      if (offset < total) {
-        loadMoreItems(offset, search, false, true);
-      }
-    }
-  }, [offset, total, search, loading, sortedIds]);
-
+  // Сохраняем состояние при изменениях
   useEffect(() => {
-    const el = listRef.current;
-    if (!el) return;
+    if (!isInitialized) return;
+    saveUserState({ selectedIds, sortedIds, offset });
+  }, [selectedIds, sortedIds, offset, saveUserState, isInitialized]);
 
-    el.addEventListener('scroll', onScroll);
-    return () => el.removeEventListener('scroll', onScroll);
-  }, [onScroll]);
+  const handleToggleSelect = useCallback((id: number) => {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]));
+  }, []);
 
-  const handleToggleSelect = (id: number) => {
-    setSelectedIds((prev) => {
-      const updated = prev.includes(id)
-        ? prev.filter((i) => i !== id)
-        : [...prev, id];
-      saveUserState({ selectedIds: updated, sortedIds, offset });
-      return updated;
+  // Загрузка следующей порции элементов при скролле
+  const loadMore = useCallback(async () => {
+    if (isLoadingRef.current || !hasMore) return;
+
+    const useSorted = debouncedSearch === '' && sortedIds.length > 0;
+
+    const { items: newItems } = await loadItems(offset, debouncedSearch, useSorted);
+
+    setItems((prev) => {
+      const existingIds = new Set(prev.map((item) => item.id));
+      const filteredNewItems = newItems.filter((item) => !existingIds.has(item.id));
+      return [...prev, ...filteredNewItems];
     });
-  };
 
-  const onDragEnd = (result: DropResult) => {
-    if (!result.destination) return;
+    setOffset((prev) => prev + newItems.length);
+    setHasMore(offset + newItems.length < total);
+  }, [loadItems, offset, debouncedSearch, sortedIds, hasMore, total]);
 
-    const newItems = Array.from(items);
-    const [removed] = newItems.splice(result.source.index, 1);
-    newItems.splice(result.destination.index, 0, removed);
+  const onDragEnd = useCallback(
+    (result: DropResult) => {
+      if (!result.destination) return;
+      if (debouncedSearch) return; // запретить сортировку при поиске
 
-    setItems(newItems);
+      const newItems = Array.from(items);
+      const [removed] = newItems.splice(result.source.index, 1);
+      newItems.splice(result.destination.index, 0, removed);
 
-    const newOrder = newItems.map((item) => item.id);
-    setSortedIds(newOrder);
-    saveUserState({ selectedIds, sortedIds: newOrder, offset });
-  };
+      setItems(newItems);
 
-  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value;
-    setSearch(val);
-    setOffset(0);
-    loadMoreItems(0, val, true, true);
-    saveUserState({ selectedIds, sortedIds, offset: 0 });
-  };
+      const newSortedIds = newItems.map((item) => item.id);
+      setSortedIds(newSortedIds);
+
+      saveUserState({ selectedIds, sortedIds: newSortedIds, offset });
+    },
+    [items, saveUserState, selectedIds, offset, debouncedSearch]
+  );
 
   return (
     <div>
-      <SearchInput value={search} onChange={handleSearchChange} />
-      <DragDropContext onDragEnd={onDragEnd}>
-        <Droppable droppableId="list">
-          {(provided) => (
-            <ul
-              {...provided.droppableProps}
-              ref={(node) => {
-                provided.innerRef(node);
-                listRef.current = node;
-              }}
-              className="item-list"
-            >
-              {items.map((item, idx) => {
-                const isSelected = selectedIds.includes(item.id);
-                return (
-                  <Draggable
-                    key={item.id}
-                    draggableId={item.id.toString()}
-                    index={idx}
-                  >
-                    {(provided, snapshot) => (
-                      <ItemRow
-                        id={item.id}
-                        value={item.value}
-                        isSelected={isSelected}
-                        onToggleSelect={handleToggleSelect}
-                        provided={provided}
-                        snapshot={snapshot}
-                      />
-                    )}
-                  </Draggable>
-                );
-              })}
-              {provided.placeholder}
-              {loading && <Loader />}
-            </ul>
-          )}
-        </Droppable>
-      </DragDropContext>
+      <SearchInput value={search} onChange={(e) => setSearch(e.target.value)} />
+      <div id="scrollableDiv" style={{ height: 650, width: '420px', overflow: 'auto' }}>
+        <DragDropContext onDragEnd={onDragEnd}>
+          <Droppable droppableId="list">
+            {(provided) => (
+              <InfiniteScroll
+                dataLength={items.length}
+                next={loadMore}
+                hasMore={hasMore}
+                loader={<Loader />}
+                scrollableTarget="scrollableDiv"
+                scrollThreshold={0.8}
+                style={{ overflow: 'visible' }}
+              >
+                <ul {...provided.droppableProps} ref={provided.innerRef} className="item-list">
+                  {items.map((item, index) => (
+                    <Draggable key={item.id} draggableId={item.id.toString()} index={index}>
+                      {(provided, snapshot) => (
+                        <ItemRow
+                          id={item.id}
+                          value={item.value}
+                          isSelected={selectedIds.includes(item.id)}
+                          onToggleSelect={handleToggleSelect}
+                          provided={provided}
+                          snapshot={snapshot}
+                        />
+                      )}
+                    </Draggable>
+                  ))}
+                  {provided.placeholder}
+                </ul>
+                {loading && items.length > 0 && <Loader />}
+              </InfiniteScroll>
+            )}
+          </Droppable>
+        </DragDropContext>
+      </div>
     </div>
   );
 };
