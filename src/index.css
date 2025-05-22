@@ -1,0 +1,130 @@
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #020014;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+
+  --color-primary: #646cff;
+  --color-primary-hover: #535bf2;
+  --color-bg: #242424;
+  --color-bg-alt: #1a1a1a;
+  --color-text: rgba(255, 255, 255, 0.87);
+  --color-border: transparent;
+  --color-border-hover: var(--color-primary);
+  --color-selected-bg: #3a3a6e;
+}
+
+a {
+  font-weight: 500;
+  color: var(--color-primary);
+  text-decoration: none;
+  transition: color 0.3s ease;
+}
+a:hover {
+  color: var(--color-primary-hover);
+}
+
+body {
+  margin: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  padding: 2rem;
+  box-sizing: border-box;
+}
+
+h1 {
+  font-size: 3.2em;
+  line-height: 1.1;
+  margin-bottom: 1rem;
+}
+
+button {
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: var(--color-bg-alt);
+  color: var(--color-text);
+  cursor: pointer;
+  transition: border-color 0.25s, background-color 0.25s;
+  user-select: none;
+}
+button:hover {
+  border-color: var(--color-border-hover);
+  background-color: #2e2e72;
+}
+button:focus,
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color;
+  outline-offset: 2px;
+}
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: 1rem;
+  border-radius: 6px;
+  border: 1px solid #555;
+  padding: 0.5em 0.75em;
+  background-color: var(--color-bg-alt);
+  color: var(--color-text);
+  transition: border-color 0.2s ease;
+  box-sizing: border-box;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 5px rgba(100, 108, 255, 0.6);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color: #213547;
+    background-color: #ffffff;
+
+    --color-primary: #646cff;
+    --color-primary-hover: #747bff;
+    --color-bg: #ffffff;
+    --color-bg-alt: #f9f9f9;
+    --color-text: #213547;
+    --color-border: transparent;
+    --color-border-hover: var(--color-primary);
+    --color-selected-bg: #d0e8ff;
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+  }
+
+  button {
+    background-color: var(--color-bg-alt);
+    color: var(--color-text);
+  }
+
+  button:hover {
+    background-color: #dbe1ff;
+  }
+
+  input, select, textarea {
+    background-color: var(--color-bg-alt);
+    color: var(--color-text);
+    border-color: #ccc;
+  }
+}

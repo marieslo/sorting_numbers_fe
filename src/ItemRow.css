@@ -1,0 +1,25 @@
+.itemRow {
+  user-select: none;
+  padding: 2px 4px;
+  margin-bottom: 4px;
+  background-color: white;
+  border: 1px solid lightgray;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  color: #222222;
+  transition: box-shadow 0.2s ease;
+}
+
+.itemRow.selected {
+  background-color: #bbff61;
+}
+
+.itemRow.dragging {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.itemRow input[type="checkbox"] {
+  margin-right: 10px;
+  cursor: pointer;
+}

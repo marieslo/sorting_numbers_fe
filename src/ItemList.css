@@ -1,0 +1,8 @@
+.item-list {
+  list-style: none;
+  padding: 0;
+  max-height: 660px;
+  overflow-y: auto;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
