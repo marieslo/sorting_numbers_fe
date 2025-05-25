@@ -1,9 +1,10 @@
 .itemRow {
   user-select: none;
+  width: 260px;
   padding: 2px 4px;
   margin-bottom: 4px;
-  background-color: white;
-  border: 1px solid lightgray;
+  background-color: #fcfcfc;
+  border: 1px solid #dddada;
   border-radius: 4px;
   display: flex;
   align-items: center;
@@ -12,7 +13,7 @@
 }
 
 .itemRow.selected {
-  background-color: #bbff61;
+  background-color: #d7f745;
 }
 
 .itemRow.dragging {

@@ -1,9 +1,9 @@
-import ItemList from './ItemList';
+import ItemList from './components/ItemList';
 
 const App = () => {
   return (
-    <div style={{ maxWidth: 800, margin: 'auto' }}>
-      <h1>Список элементов</h1>
+    <div>
+      <h2>Список элементов</h2>
       <ItemList />
     </div>
   );

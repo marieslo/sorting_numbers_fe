@@ -4,7 +4,9 @@ import './SearchInput.css';
 interface SearchInputProps {
   value: string;
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  placeholder?: string;
 }
+
 
 const SearchInput: React.FC<SearchInputProps> = ({ value, onChange }) => {
   return (
