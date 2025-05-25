@@ -102,7 +102,7 @@ const ItemList: React.FC = () => {
     }
   }, []);
 
-  // Сохраняем состояние пользователя на сервере, без await, т.к. не критично ждать
+  // Сохраняем состояние пользователя на сервере
   const saveUserState = useCallback((state: Partial<UserState>) => {
     axios.post(`${API_URL}/save-state`, state).catch(() => {});
   }, []);
@@ -147,39 +147,46 @@ const ItemList: React.FC = () => {
   }, []);
 
   // Инициализация компонента: загружаем состояние и данные
-  useEffect(() => {
-    (async () => {
-      const state = await fetchUserState();
-      setSelectedIds(state.selectedIds);
-      setSortedIds(state.sortedIds);
-      setFilteredSortedIds(state.filteredSortedIds);
-      setOffset(state.offset);
-      setFilteredOffset(state.filteredOffset);
-      setLastSearch(state.lastSearch);
+useEffect(() => {
+  (async () => {
+    const state = await fetchUserState();
 
-      offsetRef.current = state.offset;
-      filteredOffsetRef.current = state.filteredOffset;
-      searchRef.current = state.lastSearch;
+    setSelectedIds(state.selectedIds);
+    setSortedIds(state.sortedIds);
+    setFilteredSortedIds(state.filteredSortedIds);
+    setOffset(state.offset);
+    setFilteredOffset(state.filteredOffset);
+    setLastSearch(state.lastSearch);
 
-      const isFiltered = !!state.lastSearch;
-      const useSorted = !isFiltered;
-      const ids = isFiltered ? state.filteredSortedIds : state.sortedIds;
-      const scrollTop = isFiltered ? state.filteredScrollTop : state.scrollTop;
+    offsetRef.current = state.offset;
+    filteredOffsetRef.current = state.filteredOffset;
+    searchRef.current = state.lastSearch;
 
-      let loadedItems: Item[] = [];
-      if (ids.length) {
-        loadedItems = await loadItemsByIds(ids.slice(0, LIMIT));
-      } else {
-        const { items: freshItems } = await loadItems(0, state.lastSearch, useSorted);
-        loadedItems = freshItems;
-      }
-      setItems(loadedItems);
-      setTimeout(() => {
-        if (listRef.current) listRef.current.scrollTop = scrollTop;
-        setIsInitialized(true);
-      }, 0);
-    })();
-  }, [fetchUserState, loadItemsByIds, loadItems]);
+    const isFiltered = !!state.lastSearch;
+    const useSorted = !isFiltered;
+    const ids = isFiltered ? state.filteredSortedIds : state.sortedIds;
+    const scrollTop = isFiltered ? state.filteredScrollTop : state.scrollTop;
+
+    let loadedItems: Item[] = [];
+    if (ids.length) {
+      loadedItems = await loadItemsByIds(ids.slice(0, LIMIT));
+      if (!isFiltered) setSortedIds(ids);
+      else setFilteredSortedIds(ids);
+    } else {
+      const { items: freshItems } = await loadItems(0, state.lastSearch, useSorted);
+      loadedItems = freshItems;
+      if (!isFiltered) setSortedIds(freshItems.map((item: { id: any; }) => item.id));
+      else setFilteredSortedIds(freshItems.map((item: { id: any; }) => item.id));
+    }
+    setItems(loadedItems);
+
+    setTimeout(() => {
+      if (listRef.current) listRef.current.scrollTop = scrollTop;
+      setIsInitialized(true);
+    }, 0);
+  })();
+}, [fetchUserState, loadItemsByIds, loadItems]);
+
 
   // Обработка изменения поиска с дебаунсом
   useEffect(() => {
