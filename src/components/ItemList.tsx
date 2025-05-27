@@ -9,19 +9,23 @@ import {
   type DropResult,
 } from '@hello-pangea/dnd';
 import throttle from 'lodash/throttle';
+
 import SearchInput from './SearchInput';
 import ItemRow from './ItemRow';
+import Loader from './Loader';
 import { API_URL } from '../api';
 import './ItemList.css';
 
-const LIMIT = 20;           // Количество элементов подгружаемых за один запрос
-const ITEM_HEIGHT = 30;     // Высота одного элемента списка (для вычисления подгрузки)
+const LIMIT = 20;           // Кол-во элементов подгружаемых за один запрос
+const ITEM_HEIGHT = 30;     // Высота одного элемента списка для логики подгрузки при скролле
 
+// Тип элемента списка
 interface Item {
   id: number;
   value: string;
 }
 
+// Интерфейс состояния пользователя для сохранения UI-состояния и восстановления
 interface UserState {
   selectedIds: number[];
   sortedIds: number[];
@@ -30,10 +34,7 @@ interface UserState {
   offset: number;
 }
 
-/**
- * Утилита для перестановки элементов массива при drag-and-drop.
- * Возвращает новый массив с элементами в новом порядке.
- */
+// Универсальная функция перестановки элементов массива (immutable)
 function reorder<T>(list: T[], start: number, end: number): T[] {
   const result = [...list];
   const [removed] = result.splice(start, 1);
@@ -41,312 +42,262 @@ function reorder<T>(list: T[], start: number, end: number): T[] {
   return result;
 }
 
-/**
- * Хук для дебаунса значения с задержкой.
- * Используется для оптимизации частоты вызова при вводе текста (например, поиска).
- */
+// Кастомный хук для дебаунса значения (задержка обновления) — используется для оптимизации запросов при вводе
 const useDebounce = <T,>(value: T, delay = 150): T => {
   const [debounced, setDebounced] = useState(value);
+
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(value), delay);
     return () => clearTimeout(timer);
   }, [value, delay]);
+
   return debounced;
 };
 
 const ItemList: React.FC = () => {
-  const [items, setItems] = useState<Item[]>([]);               // Загруженные элементы
-  const [selectedIds, setSelectedIds] = useState<number[]>([]); // Выбранные элементы
-  const [sortedIds, setSortedIds] = useState<number[]>([]);     // Порядок элементов (id)
-  const [offset, setOffset] = useState(0);                      // Смещение для пагинации
-  const [search, setSearch] = useState('');                     // Введённый поисковый запрос
-  const [lastSearch, setLastSearch] = useState('');             // Последний применённый поисковый запрос
-  const [isInitialized, setIsInitialized] = useState(false);    // Флаг завершения начальной загрузки
-  const [isLoadingMore, setIsLoadingMore] = useState(false);    // Флаг загрузки при подгрузке
+  const [itemsMap, setItemsMap] = useState(new Map<number, Item>()); // Хранит элементы по id для быстрого доступа
+  const [sortedIds, setSortedIds] = useState<number[]>([]);         // Текущий порядок ID для отображения
+  const [baseSortedIds, setBaseSortedIds] = useState<number[]>([]); // Исходный порядок (без фильтрации)
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);     // Выбранные элементы
+  const [search, setSearch] = useState('');                         // Текущий ввод поиска
+  const [lastSearch, setLastSearch] = useState('');                 // Последний применённый поиск (для контроля)
+  const [offset, setOffset] = useState(0);                          // Смещение для пагинации
+  const [isLoadingMore, setIsLoadingMore] = useState(false);        // Флаг подгрузки дополнительных элементов
+  const [isInitialized, setIsInitialized] = useState(false);        // Флаг загрузки первоначального состояния
 
-  const listRef = useRef<HTMLDivElement>(null);                 // Реф на контейнер списка
-  const cancelSource = useRef<CancelTokenSource | null>(null);  // Источник отмены axios-запроса
-  const lastRequestId = useRef(0);                               // Идентификатор последнего запроса для предотвращения race conditions
+  // Реф для контейнера списка — нужен для контроля скролла
+  const listRef = useRef<HTMLDivElement>(null);
 
-  // Рефы для актуальных значений offset и search внутри колбеков
-  const offsetRef = useRef(offset);
-  const searchRef = useRef(search);
-  useEffect(() => { offsetRef.current = offset; }, [offset]);
-  useEffect(() => { searchRef.current = search; }, [search]);
+  // Сохраняем scrollTop для восстановления скролла после рендера
+  const savedScrollTop = useRef(0);
 
-  // Быстрый доступ к элементам по id
-  const itemsMap = useMemo(() => new Map(items.map(i => [i.id, i])), [items]);
+  // Для отмены предыдущих запросов (например, при быстром вводе поиска)
+  const cancelSource = useRef<CancelTokenSource | null>(null);
 
-  // Дебаунсим значение поиска для снижения количества запросов
+  // Уникальный инкремент для идентификации актуального запроса (чтобы избежать race conditions)
+  const lastRequestId = useRef(0);
+
+  // Задержка для поиска — чтобы не делать запрос при каждом вводе символа
   const debouncedSearch = useDebounce(search);
 
-  // Сохраняем scrollTop в ref, чтобы потом применить после рендера
-  const savedScrollTop = useRef(0);
-  // Флаг, чтобы скролл восстанавливался один раз после загрузки
-  const [scrollRestored, setScrollRestored] = useState(false);
-
-  /**
-   * Запрос состояния пользователя с сервера
-   * (выбранные элементы, порядок сортировки, позиция скролла и т.п.)
-   */
-  const fetchUserState = useCallback(async (): Promise<UserState> => {
+  // Получаем сохранённое состояние пользователя с сервера
+  const fetchUserState = async (): Promise<UserState> => {
     try {
       const res = await axios.get(`${API_URL}/get-state`);
       return res.data;
     } catch {
-      // При ошибке возвращаем дефолтное состояние
-      return {
-        selectedIds: [],
-        sortedIds: [],
-        scrollTop: 0,
-        lastSearch: '',
-        offset: 0,
-      };
+      // Возвращаем дефолт, если ошибка (например, первый заход)
+      return { selectedIds: [], sortedIds: [], scrollTop: 0, lastSearch: '', offset: 0 };
     }
-  }, []);
+  };
 
-  /**
-   * Сохраняем состояние пользователя на сервере:
-   * выбранные элементы, порядок, позиция скролла, поисковый запрос, смещение и т.п.
-   */
-  const saveUserState = useCallback((state: Partial<UserState>) => {
-    axios.post(`${API_URL}/save-state`, state).catch(() => {
-      // Игнорируем ошибки сохранения состояния
-    });
-  }, []);
+  // Сохраняем состояние пользователя на сервере, игнорируем ошибки (fire-and-forget)
+  const saveUserState = (state: Partial<UserState>) => {
+    axios.post(`${API_URL}/save-state`, state).catch(() => {});
+  };
 
-  /**
-   * Загрузка элементов с сервера с поддержкой отмены предыдущего запроса
-   * и индикатора загрузки, если загрузка долгая.
-   */
-  const loadItems = useCallback(async (start: number, searchTerm: string, limit = LIMIT) => {
-    cancelSource.current?.cancel();                  // Отменяем предыдущий запрос
+  // Загружаем элементы с сервера с пагинацией и поиском
+  const loadItems = async (start: number, searchTerm: string, limit = LIMIT): Promise<Item[]> => {
+    // Отменяем предыдущий запрос, если есть
+    cancelSource.current?.cancel();
     cancelSource.current = axios.CancelToken.source();
+
+    // Обновляем id текущего запроса для отслеживания актуальности данных
     const requestId = ++lastRequestId.current;
 
-    setIsLoadingMore(false);
-    const loaderTimeout = setTimeout(() => setIsLoadingMore(true), 800);
+    setIsLoadingMore(true);
 
     try {
       const res = await axios.get(`${API_URL}/items`, {
         params: { offset: start, limit, search: searchTerm },
         cancelToken: cancelSource.current.token,
       });
-      if (requestId !== lastRequestId.current) return { items: [], total: 0 }; // Игнорируем устаревший запрос
-      return res.data;
+
+      // Проверяем, что это последний запрос — если нет, игнорируем результат
+      if (requestId !== lastRequestId.current) return [];
+
+      return res.data.items;
     } catch {
-      return { items: [], total: 0 };
+      return [];
     } finally {
-      clearTimeout(loaderTimeout);
       setIsLoadingMore(false);
     }
+  };
+
+  // Инициализация компонента — загрузка пользовательского состояния и элементов
+  useEffect(() => {
+    (async () => {
+      const state = await fetchUserState();
+
+      // Восстанавливаем UI-состояние
+      setSelectedIds(state.selectedIds);
+      setSortedIds(state.sortedIds);
+      setBaseSortedIds(state.sortedIds);
+      setSearch(state.lastSearch);
+      setLastSearch(state.lastSearch);
+      setOffset(state.offset);
+      savedScrollTop.current = state.scrollTop;
+
+      let loadedItems: Item[] = [];
+
+      // Если есть сохранённый порядок, пытаемся загрузить по ID
+      if (state.sortedIds.length) {
+        try {
+          const res = await axios.post(`${API_URL}/items/bulk`, { ids: state.sortedIds });
+          loadedItems = res.data.items;
+        } catch {
+          // fallback: загружаем элементы по offset, если bulk-запрос не удался
+          loadedItems = await loadItems(0, state.lastSearch, state.offset || LIMIT);
+        }
+      } else {
+        // Иначе загружаем первые элементы без фильтра
+        loadedItems = await loadItems(0, '', LIMIT);
+        const ids = loadedItems.map(i => i.id);
+        setSortedIds(ids);
+        setBaseSortedIds(ids);
+      }
+
+      // Сохраняем элементы в Map для быстрого доступа по id
+      setItemsMap(new Map(loadedItems.map(i => [i.id, i])));
+
+      setIsInitialized(true);
+
+      // Восстанавливаем scrollTop после рендера
+      requestAnimationFrame(() => {
+        if (listRef.current) listRef.current.scrollTop = savedScrollTop.current;
+      });
+    })();
   }, []);
 
-  /**
-   * Эффект инициализации компонента:
-   *  - Загружаем состояние пользователя
-   *  - Восстанавливаем выбранные элементы, порядок, поисковый запрос, смещение
-   *  - Загружаем элементы (bulk-запросом или с offset)
-   *  - Сохраняем scrollTop в ref для последующего восстановления
-   */
-useEffect(() => {
-  (async () => {
-    const state = await fetchUserState();
+  // Эффект отслеживает изменения в поиске, реализует логику фильтрации и сброса поиска
+  useEffect(() => {
+    if (!isInitialized) return;
 
-    setSelectedIds(state.selectedIds);
-    setLastSearch(state.lastSearch);
-    setSearch(state.lastSearch);
-    setOffset(state.offset);
+    // Если пользователь очистил поиск — восстанавливаем базовый список
+    if (debouncedSearch === '' && lastSearch !== '') {
+      (async () => {
+        setSortedIds(baseSortedIds);
+        setLastSearch('');
+        saveUserState({ sortedIds: baseSortedIds, lastSearch: '' });
 
-    savedScrollTop.current = state.scrollTop || 0;
-    setScrollRestored(false);
+        try {
+          const res = await axios.post(`${API_URL}/items/bulk`, { ids: baseSortedIds });
+          const restoredItems = res.data.items as Item[];
+          const newMap = new Map(restoredItems.map(item => [item.id, item]));
+          setItemsMap(newMap);
+        } catch {
+          // При ошибке сбрасываем список
+          setItemsMap(new Map());
+        }
 
-    let loadedItems: Item[] = [];
+        // Скроллим вверх при сбросе поиска
+        if (listRef.current) listRef.current.scrollTop = 0;
+      })();
 
-    if (state.lastSearch) {
-      // Если есть поисковый запрос — грузим именно по нему
-      const { items: searchItems } = await loadItems(0, state.lastSearch, state.offset || LIMIT);
-      loadedItems = searchItems;
-      setSortedIds(searchItems.map((i: { id: any; }) => i.id));
-    } else if (state.sortedIds.length) {
-      try {
-        const res = await axios.post(`${API_URL}/items/bulk`, { ids: state.sortedIds });
-        loadedItems = res.data.items;
-        setSortedIds(state.sortedIds);
-      } catch {
-        const { items: freshItems } = await loadItems(0, '', state.offset || LIMIT);
-        loadedItems = freshItems;
-        setSortedIds(freshItems.map((i: { id: any; }) => i.id));
-      }
-    } else {
-      const { items: freshItems } = await loadItems(0, '', state.offset || LIMIT);
-      loadedItems = freshItems;
-      setSortedIds(freshItems.map((i: { id: any; }) => i.id));
+      return;
     }
 
-    setItems(loadedItems);
-    setIsInitialized(true);
-  })();
-}, [fetchUserState, loadItems]);
+    // При изменении поиска — делаем новый запрос с фильтром
+    if (debouncedSearch !== '' && debouncedSearch !== lastSearch) {
+      (async () => {
+        setLastSearch(debouncedSearch);
+        setOffset(0);
 
+        // Загружаем новые элементы по поиску
+        const newItems = await loadItems(0, debouncedSearch);
+        const newMap = new Map(newItems.map(i => [i.id, i]));
+        setItemsMap(newMap);
 
-  /**
-   * Эффект для восстановления позиции скролла.
-   * Выполняется после того, как данные (items) загружены и компонент инициализирован.
-   * Устанавливает scrollTop один раз, предотвращая «скачки» скролла.
-   */
-  useEffect(() => {
-    if (isInitialized && items.length && !scrollRestored) {
-      if (listRef.current) {
-        listRef.current.scrollTop = savedScrollTop.current;
-      }
-      setScrollRestored(true);
+        const newIds = newItems.map(i => i.id);
+        setSortedIds(newIds);
+
+        // Сохраняем состояние пользователя
+        saveUserState({ sortedIds: newIds, lastSearch: debouncedSearch, offset: newItems.length, scrollTop: 0 });
+
+        // Скроллим в начало списка
+        if (listRef.current) listRef.current.scrollTop = 0;
+      })();
     }
-  }, [isInitialized, items, scrollRestored]);
+  }, [debouncedSearch, isInitialized, lastSearch, baseSortedIds]);
 
-  /**
-   * Эффект для обработки изменения поискового запроса (с дебаунсом).
-   * При изменении поиска:
-   *  - Сбрасываем offset
-   *  - Загружаем новые элементы
-   *  - Сбрасываем скролл в начало
-   *  - Сохраняем состояние пользователя
-   */
-  useEffect(() => {
-    if (!isInitialized || debouncedSearch === lastSearch) return;
-
-    (async () => {
-      setLastSearch(debouncedSearch);
-      setOffset(0);
-
-      const { items: newItems } = await loadItems(0, debouncedSearch);
-      setItems(newItems);
-
-      const newIds = newItems.map((i: { id: any; }) => i.id);
-      setSortedIds(newIds);
-
-      // Сбрасываем скролл в начало при новом поиске
-      if (listRef.current) listRef.current.scrollTop = 0;
-
-      saveUserState({
-        selectedIds,
-        sortedIds: newIds,
-        offset: newItems.length,
-        scrollTop: 0,
-        lastSearch: debouncedSearch,
-      });
-
-      setScrollRestored(true);
-    })();
-  }, [debouncedSearch, isInitialized, lastSearch, loadItems, saveUserState, selectedIds]);
-
-  /**
-   * Обработчик скролла для подгрузки новых элементов при достижении низа списка.
-   * Также сохраняет позицию скролла в состоянии пользователя.
-   */
+  // Обработчик скролла — для бесконечной подгрузки элементов и сохранения scrollTop
   const onScroll = useCallback(() => {
     const el = listRef.current;
     if (!el) return;
 
     const { scrollTop, scrollHeight, clientHeight } = el;
+
+    // Проверяем, нужно ли подгрузить еще элементы — когда пользователь почти долистал до конца списка
     const shouldLoad = scrollTop + clientHeight >= scrollHeight - ITEM_HEIGHT;
 
     if (shouldLoad && !isLoadingMore) {
-      const currentOffset = offsetRef.current;
-      const currentSearch = searchRef.current;
+      // Асинхронно подгружаем элементы и объединяем их с текущими
+      const loadMore = async () => {
+        const newItems = await loadItems(offset, search);
+        const newMap = new Map(itemsMap);
+        newItems.forEach(item => newMap.set(item.id, item));
+        setItemsMap(newMap);
 
-      setIsLoadingMore(true);
-      loadItems(currentOffset, currentSearch).then(({ items: newItems }) => {
-        if (newItems.length === 0) {
-          setIsLoadingMore(false);
-          return;
-        }
+        const newIds = newItems.map(i => i.id);
+        setSortedIds(prev => {
+          // Убираем дубликаты с помощью Set, т.к. возможно элементы могут повториться
+          const combined = [...prev, ...newIds];
+          return Array.from(new Set(combined));
+        });
 
-        setItems(prev => [...prev, ...newItems]);
+        // Увеличиваем offset для следующей подгрузки
         setOffset(prev => prev + newItems.length);
-
-        const newIds = newItems.map((i: { id: any; }) => i.id);
-        setSortedIds(prev => Array.from(new Set([...prev, ...newIds])));
-        setIsLoadingMore(false);
-      });
+      };
+      loadMore();
     }
 
-    // Сохраняем текущий scrollTop
-    saveUserState({
-      scrollTop,
-    });
-  }, [loadItems, saveUserState, isLoadingMore]);
+    // Сохраняем позицию скролла в пользовательском состоянии
+    saveUserState({ scrollTop });
+  }, [isLoadingMore, offset, itemsMap, search]);
 
-  // throttle для onScroll, чтобы не вызывать слишком часто
+  // Используем throttle, чтобы ограничить частоту вызовов onScroll (оптимизация производительности)
   const throttledScroll = useMemo(() => throttle(onScroll, 200), [onScroll]);
 
-  /**
-   * Обработчик выбора/снятия выбора элемента списка.
-   * Обновляет состояние выбранных и сохраняет на сервер.
-   */
+  // Обработчик выбора элемента — добавляем/удаляем из выбранных
   const onSelect = useCallback((id: number) => {
     setSelectedIds(prev => {
       const updated = prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id];
       saveUserState({ selectedIds: updated });
       return updated;
     });
-  }, [saveUserState]);
+  }, []);
 
-  /**
-   * Обработчик окончания drag-and-drop перестановки.
-   * Обновляет порядок элементов и сохраняет состояние.
-   */
-  const onDragEnd = useCallback(async (result: DropResult) => {
+  // Обработчик окончания drag-n-drop — переставляем элементы и сохраняем состояние
+  const onDragEnd = useCallback((result: DropResult) => {
     if (!result.destination) return;
 
-    const from = result.source.index;
-    const to = result.destination.index;
+    // Вычисляем новый порядок элементов после перестановки
+    const newSorted = reorder(sortedIds, result.source.index, result.destination.index);
 
-    const newIds = reorder(sortedIds, from, to);
+    // Обновляем состояния с новым порядком
+    setSortedIds(newSorted);
+    setBaseSortedIds(newSorted);
 
-    const updatedItems = newIds.map(id => itemsMap.get(id)).filter(Boolean) as Item[];
-    setItems(updatedItems);
-    setSortedIds(newIds);
+    // Сохраняем пользовательское состояние для восстановления порядка
+    saveUserState({ sortedIds: newSorted });
+  }, [sortedIds]);
 
-    saveUserState({ sortedIds: newIds });
-  }, [sortedIds, itemsMap, saveUserState]);
-
-  /**
-   * Формируем массив элементов для отображения по текущему порядку sortedIds.
-   */
+  // Формируем массив видимых элементов по текущему порядку sortedIds
   const visibleItems = useMemo(() => {
     return sortedIds.map(id => itemsMap.get(id)).filter(Boolean) as Item[];
   }, [sortedIds, itemsMap]);
 
-
-
   return (
     <div className="itemListContainer">
-      <SearchInput
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
-
+      <SearchInput value={search} onChange={(e) => setSearch(e.target.value)} />
       <div
         className="listWrapper"
         ref={listRef}
         onScroll={throttledScroll}
         style={{ height: '660px', overflowY: 'auto', border: '1px solid #ccc' }}
       >
-
         {!isInitialized ? (
-          <div
-            style={{
-              height: '100%',
-              textAlign: 'center',
-              paddingTop: '250px',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              color: 'grey',
-            }}
-          >
-            Loading...
-          </div>
+          <Loader />
         ) : (
           <DragDropContext onDragEnd={onDragEnd}>
             <Droppable droppableId="list">
@@ -356,7 +307,7 @@ useEffect(() => {
                   ref={droppableProvided.innerRef}
                 >
                   {visibleItems.map((item, index) => (
-                   <Draggable key={item.id} draggableId={String(item.id)} index={index}>
+                    <Draggable key={item.id} draggableId={String(item.id)} index={index}>
                       {(provided, snapshot) => (
                         <ItemRow
                           id={item.id}
@@ -375,9 +326,10 @@ useEffect(() => {
             </Droppable>
           </DragDropContext>
         )}
-
         {isLoadingMore && (
-          <div style={{ textAlign: 'center', padding: '10px', fontSize: '12px' }}>Загрузка...</div>
+          <div style={{ textAlign: 'center', padding: '10px', fontSize: '12px' }}>
+            Загрузка...
+          </div>
         )}
       </div>
     </div>
